@@ -33,6 +33,7 @@
 #include "df/entity_raw.h"
 
 #include "uicommon.h"
+#include "listcolumn.h"
 
 using std::stringstream;
 using std::set;
@@ -94,14 +95,6 @@ struct SkillColumn
     df::job_skill skill; // displayed rating
     char label[3]; // column header
     bool special; // specified labor is mutually exclusive with all other special labors
-    bool isValidLabor (df::historical_entity *entity = NULL) const
-    {
-        if (labor == unit_labor::NONE)
-            return false;
-        if (entity && entity->entity_raw && !entity->entity_raw->jobs.permitted_labor[labor])
-            return false;
-        return true;
-    }
 };
 
 #define NUM_COLUMNS (sizeof(columns) / sizeof(SkillColumn))
@@ -177,6 +170,8 @@ const SkillColumn columns[] = {
     {9, 9, profession::POTTER, unit_labor::POTTERY, job_skill::POTTERY, "Po"},
     {9, 9, profession::GLAZER, unit_labor::GLAZING, job_skill::GLAZING, "Gl"},
     {9, 9, profession::WAX_WORKER, unit_labor::WAX_WORKING, job_skill::WAX_WORKING, "Wx"},
+    {9, 9, profession::PAPERMAKER, unit_labor::PAPERMAKING, job_skill::PAPERMAKING, "Pa"},
+    {9, 9, profession::BOOKBINDER, unit_labor::BOOKBINDING, job_skill::BOOKBINDING, "Bk"},
 // Engineering
     {10, 12, profession::SIEGE_ENGINEER, unit_labor::SIEGECRAFT, job_skill::SIEGECRAFT, "En"},
     {10, 12, profession::SIEGE_OPERATOR, unit_labor::SIEGEOPERATE, job_skill::SIEGEOPERATE, "Op"},
@@ -261,10 +256,26 @@ const SkillColumn columns[] = {
     {19, 6, profession::NONE, unit_labor::NONE, job_skill::POETRY, "Po"},
     {19, 6, profession::NONE, unit_labor::NONE, job_skill::READING, "Rd"},
     {19, 6, profession::NONE, unit_labor::NONE, job_skill::SPEAKING, "Sp"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::DANCE, "Dn"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::MAKE_MUSIC, "MM"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::SING_MUSIC, "SM"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::PLAY_KEYBOARD_INSTRUMENT, "PK"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::PLAY_STRINGED_INSTRUMENT, "PS"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::PLAY_WIND_INSTRUMENT, "PW"},
+    {19, 6, profession::NONE, unit_labor::NONE, job_skill::PLAY_PERCUSSION_INSTRUMENT, "PP"},
 
-    {20, 5, profession::NONE, unit_labor::NONE, job_skill::MILITARY_TACTICS, "MT"},
-    {20, 5, profession::NONE, unit_labor::NONE, job_skill::TRACKING, "Tr"},
-    {20, 5, profession::NONE, unit_labor::NONE, job_skill::MAGIC_NATURE, "Dr"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::CRITICAL_THINKING, "CT"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::LOGIC, "Lo"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::MATHEMATICS, "Ma"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::ASTRONOMY, "As"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::CHEMISTRY, "Ch"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::GEOGRAPHY, "Ge"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::OPTICS_ENGINEER, "OE"},
+    {20, 4, profession::NONE, unit_labor::NONE, job_skill::FLUID_ENGINEER, "FE"},
+
+    {21, 5, profession::NONE, unit_labor::NONE, job_skill::MILITARY_TACTICS, "MT"},
+    {21, 5, profession::NONE, unit_labor::NONE, job_skill::TRACKING, "Tr"},
+    {21, 5, profession::NONE, unit_labor::NONE, job_skill::MAGIC_NATURE, "Dr"},
 };
 
 struct UnitInfo
@@ -997,6 +1008,8 @@ public:
     }
     void select_profession(size_t selected)
     {
+        if (selected > manager.templates.size())
+            return;
         ProfessionTemplate prof = manager.templates[selected - 1];
 
         for (auto it = units.begin(); it != units.end(); ++it)
@@ -1012,6 +1025,11 @@ public:
         Screen::clear();
         int x = 2, y = 2;
         Screen::drawBorder("  Dwarf Manipulator - Custom Profession  ");
+        if (!manager.templates.size())
+        {
+            OutputString(COLOR_LIGHTRED, x, y, "No saved professions");
+            return;
+        }
         if (selection_empty)
         {
             OutputString(COLOR_LIGHTRED, x, y, "No dwarves selected!");
@@ -1125,13 +1143,19 @@ viewscreen_unitlaborsst::viewscreen_unitlaborsst(vector<df::unit*> &src, int cur
         cur->selected = false;
         cur->active_index = active_idx[unit];
 
-        if (!Units::isOwnRace(unit))
-            cur->allowEdit = false;
-
         if (!Units::isOwnCiv(unit))
             cur->allowEdit = false;
 
+        if (!Units::isOwnGroup(unit))
+            cur->allowEdit = false;
+
         if (unit->flags1.bits.dead)
+            cur->allowEdit = false;
+
+        if (unit->flags2.bits.visitor)
+            cur->allowEdit = false;
+
+        if (unit->flags3.bits.ghostly)
             cur->allowEdit = false;
 
         if (!ENUM_ATTR(profession, can_assign_labor, unit->profession))
@@ -1592,7 +1616,7 @@ void viewscreen_unitlaborsst::feed(set<df::interface_key> *events)
             if (enabler->mouse_lbut)
             {
                 input_row = click_unit;
-                events->insert(interface_key::UNITJOB_VIEW);
+                events->insert(interface_key::UNITJOB_VIEW_UNIT);
             }
             if (enabler->mouse_rbut)
             {
@@ -1623,9 +1647,10 @@ void viewscreen_unitlaborsst::feed(set<df::interface_key> *events)
     }
 
     UnitInfo *cur = units[input_row];
-    if (events->count(interface_key::SELECT) && (cur->allowEdit) && columns[input_column].isValidLabor(ui->main.fortress_entity))
+    df::unit *unit = cur->unit;
+    df::unit_labor cur_labor = columns[input_column].labor;
+    if (events->count(interface_key::SELECT) && (cur->allowEdit) && Units::isValidLabor(unit, cur_labor))
     {
-        df::unit *unit = cur->unit;
         const SkillColumn &col = columns[input_column];
         bool newstatus = !unit->status.labors[col.labor];
         if (col.special)
@@ -1642,16 +1667,15 @@ void viewscreen_unitlaborsst::feed(set<df::interface_key> *events)
         }
         unit->status.labors[col.labor] = newstatus;
     }
-    if (events->count(interface_key::SELECT_ALL) && (cur->allowEdit) && columns[input_column].isValidLabor(ui->main.fortress_entity))
+    if (events->count(interface_key::SELECT_ALL) && (cur->allowEdit) && Units::isValidLabor(unit, cur_labor))
     {
-        df::unit *unit = cur->unit;
         const SkillColumn &col = columns[input_column];
         bool newstatus = !unit->status.labors[col.labor];
         for (int i = 0; i < NUM_COLUMNS; i++)
         {
             if (columns[i].group != col.group)
                 continue;
-            if (!columns[i].isValidLabor(ui->main.fortress_entity))
+            if (!Units::isValidLabor(unit, columns[i].labor))
                 continue;
             if (columns[i].special)
             {
@@ -1771,14 +1795,14 @@ void viewscreen_unitlaborsst::feed(set<df::interface_key> *events)
 
     if (events->count(interface_key::CUSTOM_B))
     {
-        Screen::show(new viewscreen_unitbatchopst(units, true, &do_refresh_names));
+        Screen::show(new viewscreen_unitbatchopst(units, true, &do_refresh_names), plugin_self);
     }
 
     if (events->count(interface_key::CUSTOM_E))
     {
         vector<UnitInfo*> tmp;
         tmp.push_back(cur);
-        Screen::show(new viewscreen_unitbatchopst(tmp, false, &do_refresh_names));
+        Screen::show(new viewscreen_unitbatchopst(tmp, false, &do_refresh_names), plugin_self);
     }
 
     if (events->count(interface_key::CUSTOM_P))
@@ -1789,11 +1813,11 @@ void viewscreen_unitlaborsst::feed(set<df::interface_key> *events)
                 has_selected = true;
 
         if (has_selected) {
-            Screen::show(new viewscreen_unitprofessionset(units, true));
+            Screen::show(new viewscreen_unitprofessionset(units, true), plugin_self);
         } else {
             vector<UnitInfo*> tmp;
             tmp.push_back(cur);
-            Screen::show(new viewscreen_unitprofessionset(tmp, false));
+            Screen::show(new viewscreen_unitprofessionset(tmp, false), plugin_self);
         }
     }
 
@@ -1804,7 +1828,7 @@ void viewscreen_unitlaborsst::feed(set<df::interface_key> *events)
 
     if (VIRTUAL_CAST_VAR(unitlist, df::viewscreen_unitlistst, parent))
     {
-        if (events->count(interface_key::UNITJOB_VIEW) || events->count(interface_key::UNITJOB_ZOOM_CRE))
+        if (events->count(interface_key::UNITJOB_VIEW_UNIT) || events->count(interface_key::UNITJOB_ZOOM_CRE))
         {
             for (int i = 0; i < unitlist->units[unitlist->page].size(); i++)
             {
@@ -2047,7 +2071,7 @@ void viewscreen_unitlaborsst::render()
 
         }
 
-        canToggle = (cur->allowEdit) && columns[sel_column].isValidLabor(ui->main.fortress_entity);
+        canToggle = (cur->allowEdit) && Units::isValidLabor(unit, columns[sel_column].labor);
     }
 
     int x = 2, y = dim.y - 4;
@@ -2057,7 +2081,7 @@ void viewscreen_unitlaborsst::render()
     OutputString(10, x, y, Screen::getKeyDisplay(interface_key::SELECT_ALL));
     OutputString(canToggle ? 15 : 8, x, y, ": Toggle Group, ");
 
-    OutputString(10, x, y, Screen::getKeyDisplay(interface_key::UNITJOB_VIEW));
+    OutputString(10, x, y, Screen::getKeyDisplay(interface_key::UNITJOB_VIEW_UNIT));
     OutputString(15, x, y, ": ViewCre, ");
 
     OutputString(10, x, y, Screen::getKeyDisplay(interface_key::UNITJOB_ZOOM_CRE));
@@ -2142,7 +2166,7 @@ struct unitlist_hook : df::viewscreen_unitlistst
         {
             if (units[page].size())
             {
-                Screen::show(new viewscreen_unitlaborsst(units[page], cursor_pos[page]));
+                Screen::show(new viewscreen_unitlaborsst(units[page], cursor_pos[page]), plugin_self);
                 return;
             }
         }
